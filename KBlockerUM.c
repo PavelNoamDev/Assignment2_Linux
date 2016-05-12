@@ -1,5 +1,3 @@
-
-
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <stdio.h>
@@ -24,7 +22,6 @@ int main()
     {
 	    printf("ERROR !!!\n");
 	    return -1;
-
     }
 
     memset(&src_addr, 0, sizeof(src_addr));
@@ -56,6 +53,7 @@ int main()
 
     /* Read message from kernel */
     char path[MAX_PAYLOAD];
+    printf("Waiting for message from kernel\n");
     recvmsg(sock_fd, &msg, 0);
     /*is this closing at the correct time?
     should it be closed if its wating for a new message?*/
@@ -82,7 +80,4 @@ int main()
     strcpy(NLMSG_DATA(nlh), hash);
     printf("Sending message to kernel\n");
     sendmsg(sock_fd, &msg, 0);
-    printf("Waiting for message from kernel\n");
-
-    
 }

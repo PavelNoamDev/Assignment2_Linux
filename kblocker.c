@@ -16,8 +16,12 @@
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
+#include <net/sock.h>
+#include <linux/netlink.h>
+#include <linux/skbuff.h>
 //#include <asm-generic/uaccess.h>
 
+#define NETLINK_USER 31
 #define CR0_WP 0x00010000   // Write  Protect Bit (CR0:16)
 #define MAX_HISTORY 10  // Maximum history list size
 #define MAX_HISTORY_LINE (PATH_MAX*3 + 100) //The maximum message line contains 3 file path + extra const words
@@ -32,6 +36,8 @@ int is_exe_blocking_enabled = 1;
 int is_script_blocking_enabled = 1;
 
 static char *msg = NULL;
+struct sock *nl_sk = NULL; // Netlink socket
+int user_pid = -1; // User mode process pid
 
 static char msg_read[400] = "";
 static char first_must_line[] = "KBlocker - Last Events:\n";
@@ -39,6 +45,10 @@ static char second_must_line[] = "KBlocker Current Configuration:\n";
 static char third_must_line[] = "SHA256 hashes to block (Executables):\n";
 static char fourth_must_line[] = "SHA256 hashes to block (Python Scripts):\n";
 static ssize_t len_check = 1;
+
+int is_kblockerum_run = 0;
+//int have_responce = 0;
+//DECLARE_WAIT_QUEUE_HEAD(responce_waitqueue);     // Waitqueue for wait responce.
 
 // Node in the list of messages
 struct history_node {
@@ -78,10 +88,41 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     struct timeval time;
     unsigned long local_time;
     struct rtc_time tm;
+    int is_kblocker_user = 0;
+    struct nlmsghdr *nlh;
+    struct sk_buff *skb_out;
+    int msg_size;
+    int res;
     // Get current time
     do_gettimeofday(&time);
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
     rtc_time_to_tm(local_time, &tm);
+
+    if (strlen(filename) > 10 && !strcmp(filename + strlen(filename) - 10, "KBlockerUM")){
+        user_pid = current->pid;
+        printk(KERN_INFO "KBlockerUM with pid: %i\n", user_pid);
+        is_kblocker_user = 1;
+        is_kblockerum_run = 1;
+    }
+
+    if(!is_kblocker_user && is_kblockerum_run && (is_script_blocking_enabled || is_exe_blocking_enabled)){
+        msg_size = strlen(filename);
+        skb_out = nlmsg_new(msg_size, 0);
+        if (!skb_out) {
+            printk(KERN_ERR "Failed to allocate new skb\n");
+            return -1;
+        }
+
+        nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
+        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
+        strncpy(nlmsg_data(nlh), msg, msg_size);
+//        have_responce = 0;
+        res = nlmsg_unicast(nl_sk, skb_out, user_pid);
+        if (res < 0)
+            printk(KERN_INFO "Error while sending bak to user\n");
+//        wait_event(responce_waitqueue, have_responce); //wait until responce is received
+    }
+
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
         // Write to dmesg
@@ -283,10 +324,21 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         is_script_blocking_enabled = 0;
     }
     else if(strstr(msg, "ScriptBlock 1")){
-        is_script_blocking_enabled = 1;
     }
     kfree(msg);
     return size;
+}
+
+
+static void nl_recv_msg(struct sk_buff *skb) {
+    struct nlmsghdr *nlh;
+    printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
+
+    nlh = (struct nlmsghdr *)skb->data;
+    printk(KERN_INFO "Netlink received msg payload:%s\n", (char *)nlmsg_data(nlh));
+    user_pid = nlh->nlmsg_pid; /*pid of sending process */
+//    have_responce = 1;
+//    wake_up_all(&responce_waitqueue);
 }
 
 
@@ -296,13 +348,13 @@ struct file_operations fops = {
         .write = kblocker_proc_write,
 };
 
-
-
-
 // Init module
 static int __init init_kblockerproc (void)
 {
     char *ptr = NULL;
+    struct netlink_kernel_cfg cfg = {
+            .input = nl_recv_msg,
+    };
     unsigned long cr0;
     printk(KERN_DEBUG "Let's do some magic!\n");
 
@@ -344,6 +396,14 @@ static int __init init_kblockerproc (void)
     // Init seen history list
     INIT_LIST_HEAD(&kblocker_history.node);
 
+    // Create netlink socket
+    nl_sk = netlink_kernel_create(&init_net, NETLINK_USER, &cfg);
+    if (!nl_sk) {
+        printk(KERN_ALERT "Error creating socket.\n");
+        return -10;
+    }
+
+
     return 0;
 }
 
@@ -371,6 +431,7 @@ static void __exit exit_kblockerproc(void)
     }
 
     remove_proc_entry("KBlocker", NULL);
+    netlink_kernel_release(nl_sk); // Close Netlink socket
     printk(KERN_INFO "Exit KBlocker\n");
 
 

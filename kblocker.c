@@ -45,7 +45,7 @@ static char second_must_line[] = "KBlocker Current Configuration:\n";
 static char third_must_line[] = "SHA256 hashes to block (Executables):\n";
 static char fourth_must_line[] = "SHA256 hashes to block (Python Scripts):\n";
 static ssize_t len_check = 1;
-
+ 
 int is_kblockerum_run = 0;
 //int have_responce = 0;
 //DECLARE_WAIT_QUEUE_HEAD(responce_waitqueue);     // Waitqueue for wait responce.

@@ -50,7 +50,6 @@ int main()
     msg.msg_iovlen = 1;
 
 
-    printf("Waiting for message from kernel\n");
     /* Read message from kernel */
     char path[MAX_PAYLOAD];
     printf("Waiting for message from kernel\n");

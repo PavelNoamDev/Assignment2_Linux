@@ -22,16 +22,16 @@
 #define MAX_HISTORY 10  // Maximum history list size
 #define MAX_HISTORY_LINE (PATH_MAX*3 + 100) //The maximum message line contains 3 file path + extra const words
 
+int curr_num_of_history_lines = 0;
+
+struct history_node kblocker_history;  // History of events
+
 int is_exe_mon_enabled = 1;
 int is_script_mon_enabled = 1;
 int is_exe_blocking_enabled = 1;
 int is_script_blocking_enabled = 1;
 
 static char *msg = NULL;
-//
-//extern struct history_node file_mon_history;    // History of filemon events
-//extern struct history_node net_mon_history;     // History of netmon events
-//extern struct history_node mount_mon_history;   // History of mountmon events
 
 static char msg_read[400] = "";
 static char first_must_line[] = "KBlocker - Last Events:\n";
@@ -74,6 +74,7 @@ unsigned long **find_sys_call_table()
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
 {
+    struct history_node *line_to_add = NULL, *last_history_node = NULL;
     struct timeval time;
     unsigned long local_time;
     struct rtc_time tm;
@@ -81,13 +82,29 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     do_gettimeofday(&time);
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
     rtc_time_to_tm(local_time, &tm);
-    if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python"))
+    if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
         // Write to dmesg
         printk(KERN_INFO
         "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
         tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
         argv[1], current->pid);
+
+        // Save to history
+        line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
+        if(unlikely(!line_to_add))
+        {
+            printk(KERN_ERR "Not enough memory for history_node!\n");
+            return -1;
+        }
+        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+        "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
+        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+        argv[1], current->pid);
+        line_to_add->time_in_sec = (u32)time.tv_sec;
+
+        list_add(&(line_to_add->node), &(kblocker_history.node));
+        curr_num_of_history_lines++;
     }
     else if(is_exe_mon_enabled)
     {
@@ -96,21 +113,45 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
         tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
         filename, current->pid);
+        // Save to history
+        line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
+        if(unlikely(!line_to_add))
+        {
+            printk(KERN_ERR "Not enough memory for history_node!\n");
+            return -1;
+        }
+        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+        "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
+        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+        filename, current->pid);
+        line_to_add->time_in_sec = (u32)time.tv_sec;
+
+        list_add(&(line_to_add->node), &(kblocker_history.node));
+        curr_num_of_history_lines++;
     }
+
+    // If more then 10 lines delete the oldest one
+    if(curr_num_of_history_lines > MAX_HISTORY)
+    {
+        last_history_node = list_last_entry(&(kblocker_history.node), struct history_node, node);
+        list_del(&(last_history_node->node));
+        kfree(last_history_node);
+        curr_num_of_history_lines--;
+    }
+
     return orig_sys_execve(filename, argv, envp);
 }
 
 
 /**
-* This function is called then the kmonitorproc file is read
+* This function is called then the kblockerproc file is read
 *
 */
 ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, loff_t *offset)
 {
     int msg_len = 0, i;
-    long max_time;
-    struct history_node *net_line = NULL, *mount_line = NULL, *file_line = NULL, *max_line = NULL;
-    struct list_head *net_pos = NULL, *mount_pos = NULL, *file_pos = NULL;
+    struct history_node *history_line = NULL;
+    struct list_head *history_pos = NULL;
     size_t curr_size = strlen(first_must_line)+1;
     size_t curr_tmp_size = 0;
     char *tmp_msg = NULL, *tmp_msg2 = NULL;
@@ -122,7 +163,7 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
         return 0;
     }
 
-    // Start building KMonitor report
+    // Start building KBlocker report
     msg = (char *)kmalloc(sizeof(char) * size, GFP_KERNEL);
     if(unlikely(!msg))
     {
@@ -131,117 +172,49 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
     }
     strcpy(msg, first_must_line);
 
-//    lock_all_history();
-//    mount_pos = mount_mon_history.node.next;
-//    net_pos = net_mon_history.node.next;
-//    file_pos = file_mon_history.node.next;
-//    // Init lines with first line
-//    if(net_pos != &net_mon_history.node)
-//    {
-//    net_line = list_entry(net_pos, struct history_node, node);
-//    }
-//    if(mount_pos != &mount_mon_history.node)
-//    {
-//    mount_line = list_entry(mount_pos, struct history_node, node);
-//    }
-//    if(file_pos != &file_mon_history.node)
-//    {
-//    file_line = list_entry(file_pos, struct history_node, node);
-//    }
-//
-//    // Find last 10 history messages.
-//    for(i = 0; i < MAX_HISTORY && (net_pos != &net_mon_history.node || mount_pos != &mount_mon_history.node
-//    || file_pos != &file_mon_history.node); i++)
-//    {
-//    // Find maximum time between 3 history sorted lists
-//    max_time = -1;
-//    if(net_line != NULL && net_line->time_in_sec > max_time)
-//    {
-//    max_time = net_line->time_in_sec;
-//    }
-//    if(mount_line != NULL && mount_line->time_in_sec > max_time)
-//    {
-//    max_time = mount_line->time_in_sec;
-//    }
-//    if (file_line != NULL && file_line->time_in_sec > max_time)
-//    {
-//    max_time = file_line->time_in_sec;
-//    }
-//
-//    // Get the message with the maximum time and advance to the next line
-//    if(net_line != NULL && max_time == net_line->time_in_sec)
-//    {
-//    max_line = net_line;
-//    net_pos = net_pos->next;
-//    if(net_pos != &net_mon_history.node)
-//    {
-//    net_line = list_entry(net_pos, struct history_node, node);
-//    }
-//    else
-//    {
-//    net_line = NULL;
-//    }
-//    }
-//    else if(mount_line != NULL && max_time == mount_line->time_in_sec)
-//    {
-//    max_line = mount_line;
-//    mount_pos = mount_pos->next;
-//    if(mount_pos != &mount_mon_history.node)
-//    {
-//    mount_line = list_entry(mount_pos, struct history_node, node);
-//    }
-//    else
-//    {
-//    mount_line = NULL;
-//    }
-//    }
-//    else if(file_line != NULL && max_time == file_line->time_in_sec)
-//    {
-//    max_line = file_line;
-//    file_pos = file_pos->next;
-//    if(file_pos != &file_mon_history.node)
-//    {
-//    file_line = list_entry(file_pos, struct history_node, node);
-//    }
-//    else
-//    {
-//    file_line = NULL;
-//    }
-//    }
-//
-//    curr_tmp_size += strlen(max_line->msg)+1;
-//    tmp_msg = (char *)kmalloc((size_t)(sizeof(char)*curr_tmp_size), GFP_KERNEL);
-//    if(unlikely(!tmp_msg))
-//    {
-//    printk(KERN_ERR "Not enough memory for message! \n");
-//    unlock_all_history();
-//    return -1;
-//    }
-//    // Some string manipulation to insert the message to the start of the report
-//    strcpy(tmp_msg, max_line->msg);
-//    if(tmp_msg2)
-//    {
-//    strcat(tmp_msg, tmp_msg2);
-//    kfree(tmp_msg2);
-//    }
-//    tmp_msg2 = tmp_msg;
-//    }
-//    unlock_all_history();
-//    // Add last 10 history messages to the KMonitor report
-//    if(tmp_msg2)
-//    {
-//    curr_size += strlen(tmp_msg2)+1;
-//    msg = (char *)krealloc(msg, (size_t)(sizeof(char)*curr_size), GFP_KERNEL);
-//    if(unlikely(!msg))
-//    {
-//    printk(KERN_ERR "Not enough memory for message! \n");
-//    return -1;
-//    }
-//    strcat(msg, tmp_msg2);
-//    }
+    history_pos = kblocker_history.node.next;
+    // Init line with first line
+    if(history_pos  != &kblocker_history.node)
+        history_line = list_entry(history_pos, struct history_node, node);
+
+    for(i = 0; i < MAX_HISTORY && history_pos != &kblocker_history.node; i++)
+    {
+        curr_tmp_size += strlen(history_line->msg)+1;
+        tmp_msg = (char *)kmalloc((size_t)(sizeof(char)*curr_tmp_size), GFP_KERNEL);
+        if(unlikely(!tmp_msg))
+        {
+            printk(KERN_ERR "Not enough memory for message! \n");
+            return -1;
+        }
+        // Some string manipulation to insert the message to the start of the report
+        strcpy(tmp_msg, history_line->msg);
+        if(tmp_msg2)
+        {
+            strcat(tmp_msg, tmp_msg2);
+            kfree(tmp_msg2);
+        }
+        tmp_msg2 = tmp_msg;
+        history_pos = history_pos->next;
+        if(history_pos != &kblocker_history.node)
+            history_line = list_entry(history_pos, struct history_node, node);
+        else
+            history_line = NULL;
+    }
+
+    // Add last 10 history messages to the KBlocker report
+    if(tmp_msg2)
+    {
+        curr_size += strlen(tmp_msg2)+1;
+        msg = (char *)krealloc(msg, (size_t)(sizeof(char)*curr_size), GFP_KERNEL);
+        if(unlikely(!msg))
+        {
+            printk(KERN_ERR "Not enough memory for message! \n");
+            return -1;
+        }
+        strcat(msg, tmp_msg2);
+    }
     // Add configuration info to the KMonitor report.
     strcpy(msg_read, second_must_line);
-//    lock_all_enabled();
     if(is_exe_mon_enabled)
         strcat(msg_read, "Executable Monitoring Mode - Enabled\n");
     else
@@ -258,7 +231,6 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
         strcat(msg_read, "Python Scripts Blocking Mode - Enabled\n");
     else
         strcat(msg_read, "Python Scripts Blocking Mode - Disabled\n");
-//    unlock_all_enabled();
     curr_size += strlen(msg_read)+1;
     msg = (char *)krealloc(msg, (size_t)(sizeof(char)*curr_size), GFP_KERNEL);
     if(unlikely(!msg))
@@ -276,7 +248,7 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
 }
 
 /**
-* This function is called then the kmonitorproc file is written
+* This function is called then the kblockerproc file is written
 *
 */
 ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t size, loff_t *offset)
@@ -290,44 +262,28 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
     copy_from_user(msg, buf, size);
     // Enable or Disable some monitor
     if(strstr(msg, "ExecMon 0")){
-//        mutex_lock_killable(&network_enabled_mutex);
         is_exe_mon_enabled = 0;
-//        mutex_unlock(&network_enabled_mutex);
     }
     else if(strstr(msg, "ExecMon 1")){
-//    mutex_lock_killable(&network_enabled_mutex);
         is_exe_mon_enabled = 1;
-//    mutex_unlock(&network_enabled_mutex);
     }
     else if(strstr(msg, "ScriptMon 0")){
-//    mutex_lock_killable(&file_enabled_mutex);
         is_script_mon_enabled = 0;
-//    mutex_unlock(&file_enabled_mutex);
     }
     else if(strstr(msg, "ScriptMon 1")){
-//    mutex_lock_killable(&file_enabled_mutex);
         is_script_mon_enabled = 1;
-//    mutex_unlock(&file_enabled_mutex);
     }
     else if(strstr(msg, "ExecBlock 0")){
-//    mutex_lock_killable(&mount_enabled_mutex);
         is_exe_blocking_enabled = 0;
-//    mutex_unlock(&mount_enabled_mutex);
     }
     else if(strstr(msg, "ExecBlock 1")){
-//    mutex_lock_killable(&mount_enabled_mutex);
         is_exe_blocking_enabled = 1;
-//    mutex_unlock(&mount_enabled_mutex);
     }
     else if(strstr(msg, "ScriptBlock 0")){
-    //    mutex_lock_killable(&mount_enabled_mutex);
         is_script_blocking_enabled = 0;
-    //    mutex_unlock(&mount_enabled_mutex);
     }
     else if(strstr(msg, "ScriptBlock 1")){
-    //    mutex_lock_killable(&mount_enabled_mutex);
         is_script_blocking_enabled = 1;
-    //    mutex_unlock(&mount_enabled_mutex);
     }
     kfree(msg);
     return size;
@@ -361,7 +317,6 @@ static int __init init_kblockerproc (void)
 
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);
-
     printk(KERN_DEBUG "Read only disabled. Proceeding...\n");
 
     /* syscall_table[__NR_execve] points to stub_execve.
@@ -372,11 +327,12 @@ static int __init init_kblockerproc (void)
         printk("Bad stub_execve\n");
         return -1;
     }
-    ptr++; // Jump over 0xE8 to the sys_execve addr
-    orig_sys_execve = (void*) ptr + *(int32_t*) ptr + 4; // Save original sys_execve addr that stub_execve called
-    *(int32_t*) ptr = (char*) my_sys_execve - ptr - 4;   // Change inside stub_execve to call to my_sys_execve addr
+    ptr++; // Jump over 0xE8 to the sys_execve address
+    orig_sys_execve = (void*) ptr + *(int32_t*) ptr + 4; // Save original sys_execve address that stub_execve called
+    *(int32_t*) ptr = (char*) my_sys_execve - ptr - 4;   // Change inside stub_execve to call to my_sys_execve address
 
     write_cr0(cr0);
+
     printk(KERN_INFO "Started KBlocker\n");
     if (!proc_create("KBlocker",0666,NULL,&fops))
     {
@@ -384,6 +340,10 @@ static int __init init_kblockerproc (void)
         remove_proc_entry("KBlocker",NULL);
         return -1;
     }
+
+    // Init seen history list
+    INIT_LIST_HEAD(&kblocker_history.node);
+
     return 0;
 }
 
@@ -392,6 +352,9 @@ static void __exit exit_kblockerproc(void)
 {
     char *ptr = NULL;
     unsigned long cr0;
+    struct history_node *curr_his_node = NULL;
+    struct list_head *tmp_node = NULL, *pos = NULL;
+
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);
     ptr = memchr(syscall_table[__NR_execve], 0xE8, 200);
@@ -399,8 +362,18 @@ static void __exit exit_kblockerproc(void)
     *(int32_t*) ptr = (char*) orig_sys_execve - ptr - 4;
     write_cr0(cr0);
 
+    // Free memory of history
+    list_for_each_safe(pos, tmp_node, &kblocker_history.node)
+    {
+        curr_his_node = list_entry(pos, struct history_node, node);
+        printk(KERN_DEBUG "Freeing node with msg: %s \n", curr_his_node->msg);
+        kfree(curr_his_node);
+    }
+
     remove_proc_entry("KBlocker", NULL);
     printk(KERN_INFO "Exit KBlocker\n");
+
+
 }
 
 module_init(init_kblockerproc);

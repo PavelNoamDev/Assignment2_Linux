@@ -32,8 +32,8 @@ struct history_node kblocker_history;  // History of events
 
 int is_exe_mon_enabled = 1;
 int is_script_mon_enabled = 1;
-int is_exe_blocking_enabled = 0;
-int is_script_blocking_enabled = 0;
+int is_exe_blocking_enabled = 1;
+int is_script_blocking_enabled = 1;
 
 static char *msg = NULL;
 struct sock *nl_sk = NULL; // Netlink socket

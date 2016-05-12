@@ -324,6 +324,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         is_script_blocking_enabled = 0;
     }
     else if(strstr(msg, "ScriptBlock 1")){
+        is_script_blocking_enabled = 1;
     }
     kfree(msg);
     return size;

@@ -49,8 +49,8 @@ int main()
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
-    
 
+    printf("Waiting for message from kernel\n");
     /* Read message from kernel */
     char path[MAX_PAYLOAD];
     recvmsg(sock_fd, &msg, 0);
@@ -79,5 +79,4 @@ int main()
     strcpy(NLMSG_DATA(nlh), hash);
     printf("Sending message to kernel\n");
     sendmsg(sock_fd, &msg, 0);
-    printf("Waiting for message from kernel\n");
 }

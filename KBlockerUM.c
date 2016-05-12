@@ -1,5 +1,3 @@
-
-
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <stdio.h>
@@ -24,7 +22,6 @@ int main()
     {
 	    printf("ERROR !!!\n");
 	    return -1;
-
     }
 
     memset(&src_addr, 0, sizeof(src_addr));
@@ -83,6 +80,4 @@ int main()
     printf("Sending message to kernel\n");
     sendmsg(sock_fd, &msg, 0);
     printf("Waiting for message from kernel\n");
-
-    
 }

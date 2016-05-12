@@ -49,34 +49,36 @@ int main()
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
+    for (;;)
+    {
+    	/* Read message from kernel */
+	    char path[MAX_PAYLOAD];
+	    printf("Waiting for message from kernel\n");
+	    recvmsg(sock_fd, &msg, 0);
+	    /*is this closing at the correct time?
+	    should it be closed if its wating for a new message?*/
+	    /*close(sock_fd);*/
+	    /*NLMSG_DATA(nlh), defined in netlink.h, 
+	    returns a pointer to the payload of the netlink message*/
+	    strcpy(path, NLMSG_DATA(nlh));
+	    /*printf("Received message payload: %s\n", NLMSG_DATA(nlh));*/
 
-    /* Read message from kernel */
-    char path[MAX_PAYLOAD];
-    printf("Waiting for message from kernel\n");
-    recvmsg(sock_fd, &msg, 0);
-    /*is this closing at the correct time?
-    should it be closed if its wating for a new message?*/
-    close(sock_fd);
-    /*NLMSG_DATA(nlh), defined in netlink.h, 
-    returns a pointer to the payload of the netlink message*/
-    strcpy(path, NLMSG_DATA(nlh));
-    /*printf("Received message payload: %s\n", NLMSG_DATA(nlh));*/
+	    /*compute the name of proc according to received path,
+	    and store in hash*/
 
-    /*compute the name of proc according to received path,
-    and store in hash*/
+	    /*Compute sha256*/
+	    unsigned char hash[32];
+	    int idx;
+	    SHA256_CTX ctx;
 
-    /*Compute sha256*/
-    unsigned char hash[32];
-    int idx;
-    SHA256_CTX ctx;
-
-    sha256_init(&ctx);
-    sha256_update(&ctx,path,strlen(path));
-    sha256_final(&ctx,hash);
+	    sha256_init(&ctx);
+	    sha256_update(&ctx,path,strlen(path));
+	    sha256_final(&ctx,hash);
 
 
-    /*Send sha256 value to kernel*/
-    strcpy(NLMSG_DATA(nlh), hash);
-    printf("Sending message to kernel\n");
-    sendmsg(sock_fd, &msg, 0);
+	    /*Send sha256 value to kernel*/
+	    strcpy(NLMSG_DATA(nlh), hash);
+	    printf("Sending message to kernel\n");
+	    sendmsg(sock_fd, &msg, 0);
+    }
 }

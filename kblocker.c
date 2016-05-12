@@ -45,10 +45,10 @@ static char second_must_line[] = "KBlocker Current Configuration:\n";
 static char third_must_line[] = "SHA256 hashes to block (Executables):\n";
 static char fourth_must_line[] = "SHA256 hashes to block (Python Scripts):\n";
 static ssize_t len_check = 1;
- 
+
 int is_kblockerum_run = 0;
-//int have_responce = 0;
-//DECLARE_WAIT_QUEUE_HEAD(responce_waitqueue);     // Waitqueue for wait responce.
+int have_responce = 0;
+DECLARE_WAIT_QUEUE_HEAD(responce_waitqueue);     // Waitqueue for wait responce.
 
 // Node in the list of messages
 struct history_node {
@@ -116,11 +116,11 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
         NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
         strncpy(nlmsg_data(nlh), msg, msg_size);
-//        have_responce = 0;
+        have_responce = 0;
         res = nlmsg_unicast(nl_sk, skb_out, user_pid);
         if (res < 0)
             printk(KERN_INFO "Error while sending bak to user\n");
-//        wait_event(responce_waitqueue, have_responce); //wait until responce is received
+        wait_event(responce_waitqueue, have_responce); //wait until responce is received
     }
 
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
@@ -338,8 +338,8 @@ static void nl_recv_msg(struct sk_buff *skb) {
     nlh = (struct nlmsghdr *)skb->data;
     printk(KERN_INFO "Netlink received msg payload:%s\n", (char *)nlmsg_data(nlh));
     user_pid = nlh->nlmsg_pid; /*pid of sending process */
-//    have_responce = 1;
-//    wake_up_all(&responce_waitqueue);
+    have_responce = 1;
+    wake_up_all(&responce_waitqueue);
 }
 
 

@@ -339,7 +339,7 @@ static void nl_recv_msg(struct sk_buff *skb) {
     printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
 
     nlh = (struct nlmsghdr *)skb->data;
-    printk(KERN_INFO "Netlink received msg payload: %s\n", (char *)nlmsg_data(nlh));
+    printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
     have_responce = 1;
     wake_up_all(&responce_waitqueue);
 }

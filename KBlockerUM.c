@@ -61,7 +61,7 @@ int main()
 	    /*NLMSG_DATA(nlh), defined in netlink.h, 
 	    returns a pointer to the payload of the netlink message*/
 	    strcpy(path, NLMSG_DATA(nlh));
-	    /*printf("Received message payload: %s\n", NLMSG_DATA(nlh));*/
+	    printf("Received message payload: %s\n", NLMSG_DATA(nlh));
 
 	    /*compute the name of proc according to received path,
 	    and store in hash*/
@@ -74,6 +74,7 @@ int main()
 	    sha256_init(&ctx);
 	    sha256_update(&ctx,path,strlen(path));
 	    sha256_final(&ctx,hash);
+	    print_hash(hash);
 
 
 	    /*Send sha256 value to kernel*/

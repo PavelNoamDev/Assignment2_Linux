@@ -150,3 +150,11 @@ void sha256_final(SHA256_CTX *ctx, uchar hash[])
       hash[i+28] = (ctx->state[7] >> (24-i*8)) & 0x000000ff;
    }  
 }  
+
+void print_hash(unsigned char hash[])
+{
+   int idx;
+   for (idx=0; idx < 32; idx++)
+      printf("%02x",hash[idx]);
+   printf("\n");
+}

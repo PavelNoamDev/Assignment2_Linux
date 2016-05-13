@@ -41,6 +41,7 @@ int is_script_blocking_enabled = 1;
 int is_kblockerum_running = 0;
 
 static char *msg = NULL;
+static char received_msg[SHA256_SIZE + 1];
 struct sock *nl_sk = NULL; // Netlink socket
 int user_pid = -1; // User mode process pid
 
@@ -90,6 +91,20 @@ unsigned long **find_sys_call_table()
     return NULL;
 }
 
+int is_in_hash_list(char *value, struct hash_node *hash_list){
+    struct list_head *hash_pos = NULL;
+    struct hash_node *hash_line = NULL;
+    list_for_each(hash_pos, &(hash_list->node))
+    {
+        hash_line = list_entry(hash_pos, struct hash_node, node);
+//        printk(KERN_DEBUG "Checking node with hash: %s \n", hash_line->hash);
+        if(strncmp(hash_line->hash, value, SHA256_SIZE) == 0){
+//            printk(KERN_DEBUG "Found node with hash: %s \n", hash_line->hash);
+            return 1;
+        }
+    }
+    return 0;
+}
 
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
@@ -103,6 +118,8 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     struct sk_buff *skb_out;
     int msg_size;
     int res;
+    int is_blocked = 0;
+    received_msg[0] = '\0';
     // Get current time
     do_gettimeofday(&time);
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
@@ -138,12 +155,6 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
 
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
-        // Write to dmesg
-        printk(KERN_INFO
-        "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        argv[1], current->pid);
-
         // Save to history
         line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
         if(unlikely(!line_to_add))
@@ -151,22 +162,40 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
-        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
-        "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        argv[1], current->pid);
-        line_to_add->time_in_sec = (u32)time.tv_sec;
+        if (is_script_blocking_enabled && is_in_hash_list(received_msg, &script_hashes)){
+            is_blocked = 1;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], received_msg);
 
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], received_msg);
+        }
+        else
+        {
+            is_blocked = 0;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], current->pid, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], current->pid, received_msg);
+        }
+
+        line_to_add->time_in_sec = (u32)time.tv_sec;
         list_add(&(line_to_add->node), &(kblocker_history.node));
         curr_num_of_history_lines++;
     }
     else if(is_exe_mon_enabled)
     {
-        // Write to dmesg
-        printk(KERN_INFO
-        "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        filename, current->pid);
         // Save to history
         line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
         if(unlikely(!line_to_add))
@@ -174,12 +203,35 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
-        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
-        "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        filename, current->pid);
-        line_to_add->time_in_sec = (u32)time.tv_sec;
 
+        if (is_exe_blocking_enabled && is_in_hash_list(received_msg, &exe_hashes)){
+            is_blocked = 1;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was not loaded due to configuration (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was not loaded due to configuration\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, received_msg);
+        }
+        else
+        {
+            is_blocked = 0;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, current->pid, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, current->pid, received_msg);
+        }
+        line_to_add->time_in_sec = (u32)time.tv_sec;
         list_add(&(line_to_add->node), &(kblocker_history.node));
         curr_num_of_history_lines++;
     }
@@ -192,8 +244,10 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         kfree(last_history_node);
         curr_num_of_history_lines--;
     }
-
-    return orig_sys_execve(filename, argv, envp);
+    if (!is_blocked)
+        return orig_sys_execve(filename, argv, envp);
+    else
+        return -1;
 }
 
 
@@ -456,11 +510,17 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
 
 static void nl_recv_msg(struct sk_buff *skb) {
     struct nlmsghdr *nlh = NULL;
+    int i;
     printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
 
     nlh = (struct nlmsghdr *)skb->data;
     printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
     have_responce = 1;
+    snprintf(received_msg, SHA256_SIZE + 1, "%32phN", (char *)nlmsg_data(nlh));
+    received_msg[SHA256_SIZE] = '\0';
+    for(i = 0; i < SHA256_SIZE; i++){
+        received_msg[i] = toupper(received_msg[i]);
+    }
     wake_up_all(&responce_waitqueue);
 }
 

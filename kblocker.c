@@ -19,16 +19,20 @@
 #include <net/sock.h>
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
+#include <linux/ctype.h>
 //#include <asm-generic/uaccess.h>
 
 #define NETLINK_USER 31
 #define CR0_WP 0x00010000   // Write  Protect Bit (CR0:16)
 #define MAX_HISTORY 10  // Maximum history list size
 #define MAX_HISTORY_LINE (PATH_MAX*3 + 100) //The maximum message line contains 3 file path + extra const words
+#define SHA256_SIZE 64
 
 int curr_num_of_history_lines = 0;
 
 struct history_node kblocker_history;  // History of events
+struct hash_node script_hashes;  // History of events
+struct hash_node exe_hashes;  // History of events
 
 int is_exe_mon_enabled = 1;
 int is_script_mon_enabled = 1;
@@ -37,6 +41,7 @@ int is_script_blocking_enabled = 1;
 int is_kblockerum_running = 0;
 
 static char *msg = NULL;
+static char received_msg[SHA256_SIZE + 1];
 struct sock *nl_sk = NULL; // Netlink socket
 int user_pid = -1; // User mode process pid
 
@@ -55,6 +60,12 @@ struct history_node {
     struct list_head node;
     char msg[MAX_HISTORY_LINE];
     long time_in_sec;
+};
+
+// Node in the list of hases
+struct hash_node {
+    struct list_head node;
+    char hash[SHA256_SIZE + 1];
 };
 
 MODULE_LICENSE("GPL");
@@ -80,6 +91,20 @@ unsigned long **find_sys_call_table()
     return NULL;
 }
 
+int is_in_hash_list(char *value, struct hash_node *hash_list){
+    struct list_head *hash_pos = NULL;
+    struct hash_node *hash_line = NULL;
+    list_for_each(hash_pos, &(hash_list->node))
+    {
+        hash_line = list_entry(hash_pos, struct hash_node, node);
+//        printk(KERN_DEBUG "Checking node with hash: %s \n", hash_line->hash);
+        if(strncmp(hash_line->hash, value, SHA256_SIZE) == 0){
+//            printk(KERN_DEBUG "Found node with hash: %s \n", hash_line->hash);
+            return 1;
+        }
+    }
+    return 0;
+}
 
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
@@ -93,6 +118,8 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     struct sk_buff *skb_out;
     int msg_size;
     int res;
+    int is_blocked = 0;
+    received_msg[0] = '\0';
     // Get current time
     do_gettimeofday(&time);
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
@@ -128,12 +155,6 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
 
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
-        // Write to dmesg
-        printk(KERN_INFO
-        "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        argv[1], current->pid);
-
         // Save to history
         line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
         if(unlikely(!line_to_add))
@@ -141,22 +162,40 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
-        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
-        "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        argv[1], current->pid);
-        line_to_add->time_in_sec = (u32)time.tv_sec;
+        if (is_script_blocking_enabled && is_in_hash_list(received_msg, &script_hashes)){
+            is_blocked = 1;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], received_msg);
 
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], received_msg);
+        }
+        else
+        {
+            is_blocked = 0;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], current->pid, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            argv[1], current->pid, received_msg);
+        }
+
+        line_to_add->time_in_sec = (u32)time.tv_sec;
         list_add(&(line_to_add->node), &(kblocker_history.node));
         curr_num_of_history_lines++;
     }
     else if(is_exe_mon_enabled)
     {
-        // Write to dmesg
-        printk(KERN_INFO
-        "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        filename, current->pid);
         // Save to history
         line_to_add = (struct history_node *)kmalloc(sizeof(struct history_node), GFP_KERNEL);
         if(unlikely(!line_to_add))
@@ -164,12 +203,35 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
-        snprintf(line_to_add->msg, MAX_HISTORY_LINE,
-        "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n",
-        tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        filename, current->pid);
-        line_to_add->time_in_sec = (u32)time.tv_sec;
 
+        if (is_exe_blocking_enabled && is_in_hash_list(received_msg, &exe_hashes)){
+            is_blocked = 1;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was not loaded due to configuration (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was not loaded due to configuration\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, received_msg);
+        }
+        else
+        {
+            is_blocked = 0;
+            // Write to dmesg
+            printk(KERN_INFO
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i (%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, current->pid, received_msg);
+
+            snprintf(line_to_add->msg, MAX_HISTORY_LINE,
+            "%02d/%02d/%04d %02d:%02d:%02d, EXECUTABLE: %s was loaded with pid %i\n(%s)\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            filename, current->pid, received_msg);
+        }
+        line_to_add->time_in_sec = (u32)time.tv_sec;
         list_add(&(line_to_add->node), &(kblocker_history.node));
         curr_num_of_history_lines++;
     }
@@ -182,8 +244,10 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         kfree(last_history_node);
         curr_num_of_history_lines--;
     }
-
-    return orig_sys_execve(filename, argv, envp);
+    if (!is_blocked)
+        return orig_sys_execve(filename, argv, envp);
+    else
+        return -1;
 }
 
 
@@ -195,7 +259,8 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
 {
     int msg_len = 0, i;
     struct history_node *history_line = NULL;
-    struct list_head *history_pos = NULL;
+    struct hash_node *hash_line = NULL;
+    struct list_head *history_pos = NULL, *hash_pos = NULL;
     size_t curr_size = strlen(first_must_line)+1;
     size_t curr_tmp_size = 0;
     char *tmp_msg = NULL, *tmp_msg2 = NULL;
@@ -284,11 +349,36 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
     }
     strcat(msg, msg_read);
     strcat(msg, third_must_line);
+    // Add exe hashes to the report
+    hash_pos = exe_hashes.node.next;
+    while(hash_pos != &exe_hashes.node)
+    {
+        hash_line = list_entry(hash_pos,struct hash_node, node);
+        strcat(msg, hash_line->hash);
+        strcat(msg, "\n");
+        hash_pos = hash_pos->next;
+    }
     strcat(msg, fourth_must_line);
+    // Add script hashes to the report
+    hash_pos = script_hashes.node.next;
+    while(hash_pos != &script_hashes.node)
+    {
+        hash_line = list_entry(hash_pos,struct hash_node, node);
+        strcat(msg, hash_line->hash);
+        strcat(msg, "\n");
+        hash_pos = hash_pos->next;
+    }
     msg_len = strlen(msg) + 1;
     copy_to_user(buf, msg, msg_len);
     kfree(msg);
     return msg_len;
+}
+
+bool startsWith(const char *str, const char *pre)
+{
+    size_t lenpre = strlen(pre),
+            lenstr = strlen(str);
+    return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
 }
 
 /**
@@ -297,50 +387,140 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
 */
 ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t size, loff_t *offset)
 {
-    msg = (char *)kmalloc(size, GFP_KERNEL);
-    if(unlikely(!msg))
+    struct list_head *hash_pos = NULL, *tmp_node = NULL;
+    struct hash_node *hash_line = NULL;
+    struct hash_node *hash_to_add = NULL;
+    int i;
+    char *write_msg = NULL;
+    char tmp_hash[SHA256_SIZE + 1];
+    write_msg = (char *)kmalloc(size, GFP_KERNEL);
+    if(unlikely(!write_msg))
     {
         printk(KERN_ERR "Not enough memory for message! \n");
         return -1;
     }
-    copy_from_user(msg, buf, size);
+    copy_from_user(write_msg, buf, size);
     // Enable or Disable some monitor
-    if(strstr(msg, "ExecMon 0")){
+    if(startsWith(write_msg, "ExecMon 0")){
         is_exe_mon_enabled = 0;
     }
-    else if(strstr(msg, "ExecMon 1")){
+    else if(startsWith(write_msg, "ExecMon 1")){
         is_exe_mon_enabled = 1;
     }
-    else if(strstr(msg, "ScriptMon 0")){
+    else if(startsWith(write_msg, "ScriptMon 0")){
         is_script_mon_enabled = 0;
     }
-    else if(strstr(msg, "ScriptMon 1")){
+    else if(startsWith(write_msg, "ScriptMon 1")){
         is_script_mon_enabled = 1;
     }
-    else if(strstr(msg, "ExecBlock 0")){
+    else if(startsWith(write_msg, "ExecBlock 0")){
         is_exe_blocking_enabled = 0;
     }
-    else if(strstr(msg, "ExecBlock 1")){
+    else if(startsWith(write_msg, "ExecBlock 1")){
         is_exe_blocking_enabled = 1;
     }
-    else if(strstr(msg, "ScriptBlock 0")){
+    else if(startsWith(write_msg, "ScriptBlock 0")){
         is_script_blocking_enabled = 0;
     }
-    else if(strstr(msg, "ScriptBlock 1")){
+    else if(startsWith(write_msg, "ScriptBlock 1")){
         is_script_blocking_enabled = 1;
     }
-    kfree(msg);
+    else if(startsWith(write_msg, "AddExeHash")){
+        // Save exe hash
+        hash_to_add = (struct hash_node *)kmalloc(sizeof(struct hash_node), GFP_KERNEL);
+        if(unlikely(!hash_to_add))
+        {
+            printk(KERN_ERR "Not enough memory for hash_node!\n");
+            return -1;
+        }
+        if (strlen(write_msg) < SHA256_SIZE)
+        {
+            printk(KERN_ERR "No SHA256!\n");
+            return -1;
+        }
+//        printk(KERN_ERR "Mess all: %s\n", write_msg);
+//        printk(KERN_ERR "Mess: %s\n", write_msg + strlen(write_msg) - (SHA256_SIZE + 1));
+        strncpy(hash_to_add->hash, write_msg + strlen("AddExeHash "), SHA256_SIZE);
+        hash_to_add->hash[SHA256_SIZE] = '\0';
+//        printk(KERN_ERR "Add before hash: %s\n", hash_to_add->hash);
+        for(i = 0; i < SHA256_SIZE; i++){
+            hash_to_add->hash[i] = toupper(hash_to_add->hash[i]);
+        }
+//        printk(KERN_ERR "Add after hash: %s\n", hash_to_add->hash);
+        list_add(&(hash_to_add->node), &(exe_hashes.node));
+    }
+    else if(startsWith(write_msg, "AddScriptHash")){
+        // Save script hash
+        hash_to_add = (struct hash_node *)kmalloc(sizeof(struct hash_node), GFP_KERNEL);
+        if(unlikely(!hash_to_add))
+        {
+            printk(KERN_ERR "Not enough memory for hash_node!\n");
+            return -1;
+        }
+        if (strlen(write_msg) < SHA256_SIZE)
+        {
+            printk(KERN_ERR "No SHA256!\n");
+            return -1;
+        }
+        strncpy(hash_to_add->hash, write_msg + strlen("AddScriptHash "), SHA256_SIZE);
+        hash_to_add->hash[SHA256_SIZE] = '\0';
+        for(i = 0; i < SHA256_SIZE; i++){
+            hash_to_add->hash[i] = toupper(hash_to_add->hash[i]);
+        }
+        list_add(&(hash_to_add->node), &(script_hashes.node));
+    }
+    else if(startsWith(write_msg, "DelExeHash")){
+        strncpy(tmp_hash, write_msg + strlen("DelExeHash "), SHA256_SIZE);
+        tmp_hash[SHA256_SIZE] = '\0';
+        for(i = 0; i < SHA256_SIZE; i++){
+            tmp_hash[i] = toupper(tmp_hash[i]);
+        }
+        // Free memory of exe hashes
+        list_for_each_safe(hash_pos, tmp_node, &exe_hashes.node)
+        {
+            hash_line = list_entry(hash_pos, struct hash_node, node);
+            if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
+                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+                list_del(hash_pos);
+                kfree(hash_line);
+            }
+        }
+    }
+    else if(startsWith(write_msg, "DelScriptHash")){
+        strncpy(tmp_hash, write_msg + strlen("DelScriptHash "), SHA256_SIZE);
+        tmp_hash[SHA256_SIZE] = '\0';
+        for(i = 0; i < SHA256_SIZE; i++){
+            tmp_hash[i] = toupper(tmp_hash[i]);
+        }
+        // Free memory of exe hashes
+        list_for_each_safe(hash_pos, tmp_node, &script_hashes.node)
+        {
+            hash_line = list_entry(hash_pos, struct hash_node, node);
+            if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
+                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+                list_del(hash_pos);
+                kfree(hash_line);
+            }
+        }
+    }
+    kfree(write_msg);
     return size;
 }
 
 
 static void nl_recv_msg(struct sk_buff *skb) {
     struct nlmsghdr *nlh = NULL;
+    int i;
     printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
 
     nlh = (struct nlmsghdr *)skb->data;
     printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
     have_responce = 1;
+    snprintf(received_msg, SHA256_SIZE + 1, "%32phN", (char *)nlmsg_data(nlh));
+    received_msg[SHA256_SIZE] = '\0';
+    for(i = 0; i < SHA256_SIZE; i++){
+        received_msg[i] = toupper(received_msg[i]);
+    }
     wake_up_all(&responce_waitqueue);
 }
 
@@ -399,6 +579,12 @@ static int __init init_kblockerproc (void)
     // Init seen history list
     INIT_LIST_HEAD(&kblocker_history.node);
 
+    // Init exe hashes list
+    INIT_LIST_HEAD(&exe_hashes.node);
+
+    // Init script hashes list
+    INIT_LIST_HEAD(&script_hashes.node);
+
     // Create netlink socket
     nl_sk = netlink_kernel_create(&init_net, NETLINK_USER, &cfg);
     if (!nl_sk) {
@@ -416,6 +602,7 @@ static void __exit exit_kblockerproc(void)
     char *ptr = NULL;
     unsigned long cr0;
     struct history_node *curr_his_node = NULL;
+    struct hash_node *curr_hash_node = NULL;
     struct list_head *tmp_node = NULL, *pos = NULL;
 
     cr0 = read_cr0();
@@ -432,6 +619,26 @@ static void __exit exit_kblockerproc(void)
         printk(KERN_DEBUG "Freeing node with msg: %s \n", curr_his_node->msg);
         kfree(curr_his_node);
     }
+    ptr = NULL;
+    tmp_node = NULL;
+    // Free memory of exe hashes
+    list_for_each_safe(pos, tmp_node, &exe_hashes.node)
+    {
+        curr_hash_node = list_entry(pos, struct hash_node, node);
+        printk(KERN_DEBUG "Freeing node with hash: %s \n", curr_hash_node->hash);
+        kfree(curr_hash_node);
+    }
+
+    ptr = NULL;
+    tmp_node = NULL;
+    // Free memory of script hashes
+    list_for_each_safe(pos, tmp_node, &script_hashes.node)
+    {
+        curr_hash_node = list_entry(pos, struct hash_node, node);
+        printk(KERN_DEBUG "Freeing node with hash: %s \n", curr_hash_node->hash);
+        kfree(curr_hash_node);
+    }
+
     netlink_kernel_release(nl_sk); // Close Netlink socket
     remove_proc_entry("KBlocker", NULL);
     printk(KERN_INFO "Exit KBlocker\n");

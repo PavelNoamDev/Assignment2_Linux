@@ -55,15 +55,13 @@ int main()
     	/* Read message from kernel */
 	    printf("Waiting for message from kernel\n");
 	    recvmsg(sock_fd, &msg, 0);
-	    /*is this closing at the correct time?
-	    should it be closed if its wating for a new message?*/
-	    /*close(sock_fd);*/
+
 	    /*NLMSG_DATA(nlh), defined in netlink.h, 
 	    returns a pointer to the payload of the netlink message*/
 	    strcpy(path, NLMSG_DATA(nlh));
 	    printf("Received message payload: %s\n", NLMSG_DATA(nlh));
 
-	    /*compute the name of proc according to received path,
+	    /*compute the sha of executable according to received path,
 	    and store in hash*/
 
 	    /*Compute sha256*/
@@ -71,36 +69,6 @@ int main()
 	    int idx;
 	    SHA256_CTX ctx;
 
-	    /*char * buffer = 0;
-	    FILE * f = fopen(path, "rb");
-
-	    if(!f) 
-	    	return -1;
-
-	    if (f)
-		{
-		    fseek (f, 0, SEEK_END);
-		    const long length = ftell (f);
-		    fseek (f, 0, SEEK_SET);
-		    buffer = malloc (length);
-		    if (buffer)
-		    {
-		      fread (buffer, 1, length, f);
-		    }
-		    fclose (f);
-		}
-		if(!buffer) 
-			return -1;
-
-		if (buffer)
-		{
-		    // start to process your data / extract strings here...
-		    //printf("%s\n", buffer);
-		    sha256_init(&ctx);
-		    sha256_update(&ctx,buffer,strlen(buffer));
-		    sha256_final(&ctx,hash);
-		    print_hash(hash);
-		}*/
 
 		FILE* file = fopen(path, "rb");
 	    if(!file) return -1;

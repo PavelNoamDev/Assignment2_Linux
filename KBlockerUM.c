@@ -71,15 +71,16 @@ int main()
 	    int idx;
 	    SHA256_CTX ctx;
 
-	    char * buffer = 0;
-  		long length;
+	    /*char * buffer = 0;
 	    FILE * f = fopen(path, "rb");
 
+	    if(!f) 
+	    	return -1;
 
 	    if (f)
 		{
 		    fseek (f, 0, SEEK_END);
-		    length = ftell (f);
+		    const long length = ftell (f);
 		    fseek (f, 0, SEEK_SET);
 		    buffer = malloc (length);
 		    if (buffer)
@@ -88,16 +89,42 @@ int main()
 		    }
 		    fclose (f);
 		}
+		if(!buffer) 
+			return -1;
 
 		if (buffer)
 		{
 		    // start to process your data / extract strings here...
-		    /*printf("%s\n", buffer);*/
+		    //printf("%s\n", buffer);
 		    sha256_init(&ctx);
 		    sha256_update(&ctx,buffer,strlen(buffer));
 		    sha256_final(&ctx,hash);
 		    print_hash(hash);
-		}
+		}*/
+
+		FILE* file = fopen(path, "rb");
+	    if(!file) return -1;
+
+	    sha256_init(&ctx);
+	    const int bufSize = 32768;
+	    char* buffer = malloc(bufSize);
+	    int bytesRead = 0;
+
+	    if(!buffer) 
+	    	return -1;
+
+	    while((bytesRead = fread(buffer, 1, bufSize, file)))
+	    {
+	        sha256_update(&ctx, buffer, bytesRead);
+	    }
+	    sha256_final(&ctx,hash);
+
+	    print_hash(hash);
+	    fclose(file);
+	    free(buffer);
+	    
+
+
 		
 	    /*Send sha256 value to kernel*/
 	    strcpy(NLMSG_DATA(nlh), hash);

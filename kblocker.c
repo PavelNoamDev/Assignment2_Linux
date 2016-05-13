@@ -34,6 +34,7 @@ int is_exe_mon_enabled = 1;
 int is_script_mon_enabled = 1;
 int is_exe_blocking_enabled = 1;
 int is_script_blocking_enabled = 1;
+int is_kblockerum_running = 0;
 
 static char *msg = NULL;
 struct sock *nl_sk = NULL; // Netlink socket
@@ -46,7 +47,6 @@ static char third_must_line[] = "SHA256 hashes to block (Executables):\n";
 static char fourth_must_line[] = "SHA256 hashes to block (Python Scripts):\n";
 static ssize_t len_check = 1;
 
-int is_kblockerum_run = 0;
 int have_responce = 0;
 DECLARE_WAIT_QUEUE_HEAD(responce_waitqueue);     // Waitqueue for wait responce.
 
@@ -89,7 +89,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     unsigned long local_time;
     struct rtc_time tm;
     int is_kblocker_user = 0;
-    struct nlmsghdr *nlh;
+    struct nlmsghdr *nlh = NULL;
     struct sk_buff *skb_out;
     int msg_size;
     int res;
@@ -102,10 +102,10 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         user_pid = current->pid;
         printk(KERN_INFO "KBlockerUM with pid: %i\n", user_pid);
         is_kblocker_user = 1;
-        is_kblockerum_run = 1;
+        is_kblockerum_running = 1;
     }
 
-    if(!is_kblocker_user && is_kblockerum_run && (is_script_blocking_enabled || is_exe_blocking_enabled)){
+    if(!is_kblocker_user && is_kblockerum_running && (is_script_blocking_enabled || is_exe_blocking_enabled)){
         msg_size = strlen(filename);
         skb_out = nlmsg_new(msg_size, 0);
         if (!skb_out) {
@@ -114,13 +114,16 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         }
 
         nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
-        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
-        strncpy(nlmsg_data(nlh), msg, msg_size);
+        NETLINK_CB(skb_out).dst_group = 0; // Not in multi cast group
+        strncpy(nlmsg_data(nlh), filename, msg_size);
         have_responce = 0;
         res = nlmsg_unicast(nl_sk, skb_out, user_pid);
-        if (res < 0)
-            printk(KERN_INFO "Error while sending bak to user\n");
-        wait_event(responce_waitqueue, have_responce); //wait until responce is received
+        if (res < 0){
+            printk(KERN_INFO "Error while sending back to KBlockerUM\n");
+            is_kblockerum_running = 0;
+            }
+        else
+            wait_event(responce_waitqueue, have_responce); // Wait until response is received
     }
 
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
@@ -332,12 +335,11 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
 
 
 static void nl_recv_msg(struct sk_buff *skb) {
-    struct nlmsghdr *nlh;
+    struct nlmsghdr *nlh = NULL;
     printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
 
     nlh = (struct nlmsghdr *)skb->data;
-    printk(KERN_INFO "Netlink received msg payload:%s\n", (char *)nlmsg_data(nlh));
-    user_pid = nlh->nlmsg_pid; /*pid of sending process */
+    printk(KERN_INFO "Netlink received msg payload: %s\n", (char *)nlmsg_data(nlh));
     have_responce = 1;
     wake_up_all(&responce_waitqueue);
 }
@@ -430,9 +432,8 @@ static void __exit exit_kblockerproc(void)
         printk(KERN_DEBUG "Freeing node with msg: %s \n", curr_his_node->msg);
         kfree(curr_his_node);
     }
-
-    remove_proc_entry("KBlocker", NULL);
     netlink_kernel_release(nl_sk); // Close Netlink socket
+    remove_proc_entry("KBlocker", NULL);
     printk(KERN_INFO "Exit KBlocker\n");
 
 

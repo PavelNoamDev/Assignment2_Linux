@@ -17,6 +17,7 @@ struct msghdr msg;
 
 int main()
 {
+    char path[MAX_PAYLOAD];
     sock_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_USER);
     if (sock_fd < 0)
     {
@@ -52,7 +53,6 @@ int main()
     for (;;)
     {
     	/* Read message from kernel */
-	    char path[MAX_PAYLOAD];
 	    printf("Waiting for message from kernel\n");
 	    recvmsg(sock_fd, &msg, 0);
 	    /*is this closing at the correct time?

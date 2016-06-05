@@ -20,6 +20,7 @@
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
 #include <linux/ctype.h>
+#include <linux/fs_struct.h>
 //#include <asm-generic/uaccess.h>
 
 #define NETLINK_USER 31
@@ -106,6 +107,13 @@ int is_in_hash_list(char *value, struct hash_node *hash_list){
     return 0;
 }
 
+bool startsWith(const char *str, const char *pre)
+{
+    size_t lenpre = strlen(pre),
+            lenstr = strlen(str);
+    return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
+}
+
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
 {
@@ -119,6 +127,9 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     int msg_size;
     int res;
     int is_blocked = 0;
+    char *msgToSend = NULL;
+    char *currDir = NULL;
+    struct path *pwd = &current->fs->pwd;
     received_msg[0] = '\0';
     // Get current time
     do_gettimeofday(&time);
@@ -133,16 +144,43 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     }
 
     if(!is_kblocker_user && is_kblockerum_running && (is_script_blocking_enabled || is_exe_blocking_enabled)){
-        msg_size = strlen(filename);
+        msgToSend = kmalloc(PATH_MAX, GFP_ATOMIC);
+        if(unlikely(!msgToSend))
+        {
+            printk(KERN_ERR "Not enough memory for history_node!\n");
+            return -1;
+        }
+        if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
+        {
+            if (startsWith(argv[1], "/")){
+                printk(KERN_INFO "Yes!\n");
+                msg_size = strlen(argv[1]) + 1;
+                strncpy(msgToSend, argv[1], msg_size);
+            }
+            else
+            {
+                currDir = d_path(pwd, msgToSend, PATH_MAX);
+                msg_size = strlen(currDir) + 1;
+                strncpy(msgToSend, currDir, msg_size);
+                strcat(msgToSend, "/");
+                strcat(msgToSend, argv[1]);
+                msg_size = strlen(msgToSend) + 1;
+            }
+        }
+        else
+        {
+            msg_size = strlen(filename) + 1;
+            strncpy(msgToSend, filename, msg_size);
+        }
+        printk(KERN_INFO "Sending filename: %s\n", msgToSend);
         skb_out = nlmsg_new(msg_size, 0);
         if (!skb_out) {
             printk(KERN_ERR "Failed to allocate new skb\n");
             return -1;
         }
-
         nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
         NETLINK_CB(skb_out).dst_group = 0; // Not in multi cast group
-        strncpy(nlmsg_data(nlh), filename, msg_size);
+        strncpy(nlmsg_data(nlh), msgToSend, msg_size);
         have_responce = 0;
         res = nlmsg_unicast(nl_sk, skb_out, user_pid);
         if (res < 0){
@@ -168,12 +206,12 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_INFO
             "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration (%s)\n",
             tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-            argv[1], received_msg);
+            msgToSend, received_msg);
 
             snprintf(line_to_add->msg, MAX_HISTORY_LINE,
             "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was not loaded due to configuration\n(%s)\n",
             tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-            argv[1], received_msg);
+            msgToSend, received_msg);
         }
         else
         {
@@ -182,12 +220,12 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_INFO
             "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i (%s)\n",
             tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-            argv[1], current->pid, received_msg);
+            msgToSend, current->pid, received_msg);
 
             snprintf(line_to_add->msg, MAX_HISTORY_LINE,
             "%02d/%02d/%04d %02d:%02d:%02d, SCRIPT: %s was loaded under python with pid %i\n(%s)\n",
             tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec,
-            argv[1], current->pid, received_msg);
+            msgToSend, current->pid, received_msg);
         }
 
         line_to_add->time_in_sec = (u32)time.tv_sec;
@@ -372,13 +410,6 @@ ssize_t kblocker_proc_read(struct file *sp_file, char __user *buf, size_t size, 
     copy_to_user(buf, msg, msg_len);
     kfree(msg);
     return msg_len;
-}
-
-bool startsWith(const char *str, const char *pre)
-{
-    size_t lenpre = strlen(pre),
-            lenstr = strlen(str);
-    return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
 }
 
 /**

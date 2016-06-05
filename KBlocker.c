@@ -21,7 +21,6 @@
 #include <linux/skbuff.h>
 #include <linux/ctype.h>
 #include <linux/fs_struct.h>
-//#include <asm-generic/uaccess.h>
 
 #define NETLINK_USER 31
 #define CR0_WP 0x00010000   // Write  Protect Bit (CR0:16)
@@ -92,20 +91,20 @@ unsigned long **find_sys_call_table()
     return NULL;
 }
 
+
 int is_in_hash_list(char *value, struct hash_node *hash_list){
     struct list_head *hash_pos = NULL;
     struct hash_node *hash_line = NULL;
     list_for_each(hash_pos, &(hash_list->node))
     {
         hash_line = list_entry(hash_pos, struct hash_node, node);
-//        printk(KERN_DEBUG "Checking node with hash: %s \n", hash_line->hash);
         if(strncmp(hash_line->hash, value, SHA256_SIZE) == 0){
-//            printk(KERN_DEBUG "Found node with hash: %s \n", hash_line->hash);
             return 1;
         }
     }
     return 0;
 }
+
 
 bool startsWith(const char *str, const char *pre)
 {
@@ -114,6 +113,8 @@ bool startsWith(const char *str, const char *pre)
     return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
 }
 
+
+// Execve hook
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
 {
@@ -136,12 +137,14 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
     rtc_time_to_tm(local_time, &tm);
 
+    // If KBlockerUM then start sending hashes to him
     if (strlen(filename) > 10 && !strcmp(filename + strlen(filename) - 10, "KBlockerUM")){
         user_pid = current->pid;
         is_kblocker_user = 1;
         is_kblockerum_running = 1;
     }
 
+    // If some blocking is enabled send path to  KBlockerUM
     if(!is_kblocker_user && is_kblockerum_running && (is_script_blocking_enabled || is_exe_blocking_enabled)){
         msgToSend = kmalloc(PATH_MAX, GFP_ATOMIC);
         if(unlikely(!msgToSend))
@@ -149,14 +152,17 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
+        // If this is python script
         if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
         {
+            //If absolute script path
             if (startsWith(argv[1], "/")){
                 msg_size = strlen(argv[1]) + 1;
                 strncpy(msgToSend, argv[1], msg_size);
             }
             else
             {
+                // If relative path then find pwd and concat
                 currDir = d_path(pwd, msgToSend, PATH_MAX);
                 msg_size = strlen(currDir) + 1;
                 strncpy(msgToSend, currDir, msg_size);
@@ -171,6 +177,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             strncpy(msgToSend, filename, msg_size);
         }
 //        printk(KERN_INFO "Sending filename: %s\n", msgToSend);
+        // Send to KBlockerUM
         skb_out = nlmsg_new(msg_size, 0);
         if (!skb_out) {
             printk(KERN_ERR "Failed to allocate new skb\n");
@@ -194,6 +201,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         }
     }
 
+    // Check if monitoring enabled
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
         // Save to history

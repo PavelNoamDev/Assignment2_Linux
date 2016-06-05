@@ -138,7 +138,6 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
 
     if (strlen(filename) > 10 && !strcmp(filename + strlen(filename) - 10, "KBlockerUM")){
         user_pid = current->pid;
-        printk(KERN_INFO "KBlockerUM with pid: %i\n", user_pid);
         is_kblocker_user = 1;
         is_kblockerum_running = 1;
     }
@@ -172,7 +171,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             msg_size = strlen(filename) + 1;
             strncpy(msgToSend, filename, msg_size);
         }
-        printk(KERN_INFO "Sending filename: %s\n", msgToSend);
+//        printk(KERN_INFO "Sending filename: %s\n", msgToSend);
         skb_out = nlmsg_new(msg_size, 0);
         if (!skb_out) {
             printk(KERN_ERR "Failed to allocate new skb\n");
@@ -184,7 +183,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         have_responce = 0;
         res = nlmsg_unicast(nl_sk, skb_out, user_pid);
         if (res < 0){
-            printk(KERN_INFO "Error while sending back to KBlockerUM\n");
+//            printk(KERN_INFO "Error while sending back to KBlockerUM\n");
             is_kblockerum_running = 0;
             }
         else
@@ -469,15 +468,11 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
             printk(KERN_ERR "No SHA256!\n");
             return -1;
         }
-//        printk(KERN_ERR "Mess all: %s\n", write_msg);
-//        printk(KERN_ERR "Mess: %s\n", write_msg + strlen(write_msg) - (SHA256_SIZE + 1));
         strncpy(hash_to_add->hash, write_msg + strlen("AddExeHash "), SHA256_SIZE);
         hash_to_add->hash[SHA256_SIZE] = '\0';
-//        printk(KERN_ERR "Add before hash: %s\n", hash_to_add->hash);
         for(i = 0; i < SHA256_SIZE; i++){
             hash_to_add->hash[i] = toupper(hash_to_add->hash[i]);
         }
-//        printk(KERN_ERR "Add after hash: %s\n", hash_to_add->hash);
         list_add(&(hash_to_add->node), &(exe_hashes.node));
     }
     else if(startsWith(write_msg, "AddScriptHash")){
@@ -542,10 +537,8 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
 static void nl_recv_msg(struct sk_buff *skb) {
     struct nlmsghdr *nlh = NULL;
     int i;
-    printk(KERN_INFO "Entering: %s\n", __FUNCTION__);
-
     nlh = (struct nlmsghdr *)skb->data;
-    printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
+//    printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
     have_responce = 1;
     snprintf(received_msg, SHA256_SIZE + 1, "%32phN", (char *)nlmsg_data(nlh));
     received_msg[SHA256_SIZE] = '\0';

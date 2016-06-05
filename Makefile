@@ -1,4 +1,4 @@
-obj-m += kblocker.o
+obj-m += KBlocker.o
 
 all: KBlockerUM
 	make -C /lib/modules/`uname -r`/build M=$(PWD) modules

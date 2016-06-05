@@ -21,7 +21,6 @@
 #include <linux/skbuff.h>
 #include <linux/ctype.h>
 #include <linux/fs_struct.h>
-//#include <asm-generic/uaccess.h>
 
 #define NETLINK_USER 31
 #define CR0_WP 0x00010000   // Write  Protect Bit (CR0:16)
@@ -92,20 +91,20 @@ unsigned long **find_sys_call_table()
     return NULL;
 }
 
+
 int is_in_hash_list(char *value, struct hash_node *hash_list){
     struct list_head *hash_pos = NULL;
     struct hash_node *hash_line = NULL;
     list_for_each(hash_pos, &(hash_list->node))
     {
         hash_line = list_entry(hash_pos, struct hash_node, node);
-//        printk(KERN_DEBUG "Checking node with hash: %s \n", hash_line->hash);
         if(strncmp(hash_line->hash, value, SHA256_SIZE) == 0){
-//            printk(KERN_DEBUG "Found node with hash: %s \n", hash_line->hash);
             return 1;
         }
     }
     return 0;
 }
+
 
 bool startsWith(const char *str, const char *pre)
 {
@@ -114,6 +113,8 @@ bool startsWith(const char *str, const char *pre)
     return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
 }
 
+
+// Execve hook
 int my_sys_execve(const char __user *filename, const char __user *const __user *argv,
                    const char __user *const __user *envp)
 {
@@ -136,12 +137,14 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
     local_time = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
     rtc_time_to_tm(local_time, &tm);
 
+    // If KBlockerUM then start sending hashes to him
     if (strlen(filename) > 10 && !strcmp(filename + strlen(filename) - 10, "KBlockerUM")){
         user_pid = current->pid;
         is_kblocker_user = 1;
         is_kblockerum_running = 1;
     }
 
+    // If some blocking is enabled send path to  KBlockerUM
     if(!is_kblocker_user && is_kblockerum_running && (is_script_blocking_enabled || is_exe_blocking_enabled)){
         msgToSend = kmalloc(PATH_MAX, GFP_ATOMIC);
         if(unlikely(!msgToSend))
@@ -149,15 +152,17 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             printk(KERN_ERR "Not enough memory for history_node!\n");
             return -1;
         }
+        // If this is python script
         if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
         {
+            //If absolute script path
             if (startsWith(argv[1], "/")){
-                printk(KERN_INFO "Yes!\n");
                 msg_size = strlen(argv[1]) + 1;
                 strncpy(msgToSend, argv[1], msg_size);
             }
             else
             {
+                // If relative path then find pwd and concat
                 currDir = d_path(pwd, msgToSend, PATH_MAX);
                 msg_size = strlen(currDir) + 1;
                 strncpy(msgToSend, currDir, msg_size);
@@ -172,6 +177,7 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
             strncpy(msgToSend, filename, msg_size);
         }
 //        printk(KERN_INFO "Sending filename: %s\n", msgToSend);
+        // Send to KBlockerUM
         skb_out = nlmsg_new(msg_size, 0);
         if (!skb_out) {
             printk(KERN_ERR "Failed to allocate new skb\n");
@@ -185,11 +191,17 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         if (res < 0){
 //            printk(KERN_INFO "Error while sending back to KBlockerUM\n");
             is_kblockerum_running = 0;
-            }
-        else
+        }
+        else{
             wait_event(responce_waitqueue, have_responce); // Wait until response is received
+            if(have_responce == -1){
+                printk(KERN_ERR "Could not find the file to calculate hash\n");
+                return -1;
+            }
+        }
     }
 
+    // Check if monitoring enabled
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
     {
         // Save to history
@@ -455,7 +467,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
     else if(startsWith(write_msg, "ScriptBlock 1")){
         is_script_blocking_enabled = 1;
     }
-    else if(startsWith(write_msg, "AddExeHash")){
+    else if(startsWith(write_msg, "AddExecHash")){
         // Save exe hash
         hash_to_add = (struct hash_node *)kmalloc(sizeof(struct hash_node), GFP_KERNEL);
         if(unlikely(!hash_to_add))
@@ -468,7 +480,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
             printk(KERN_ERR "No SHA256!\n");
             return -1;
         }
-        strncpy(hash_to_add->hash, write_msg + strlen("AddExeHash "), SHA256_SIZE);
+        strncpy(hash_to_add->hash, write_msg + strlen("AddExecHash "), SHA256_SIZE);
         hash_to_add->hash[SHA256_SIZE] = '\0';
         for(i = 0; i < SHA256_SIZE; i++){
             hash_to_add->hash[i] = toupper(hash_to_add->hash[i]);
@@ -495,8 +507,8 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         }
         list_add(&(hash_to_add->node), &(script_hashes.node));
     }
-    else if(startsWith(write_msg, "DelExeHash")){
-        strncpy(tmp_hash, write_msg + strlen("DelExeHash "), SHA256_SIZE);
+    else if(startsWith(write_msg, "DelExecHash")){
+        strncpy(tmp_hash, write_msg + strlen("DelExecHash "), SHA256_SIZE);
         tmp_hash[SHA256_SIZE] = '\0';
         for(i = 0; i < SHA256_SIZE; i++){
             tmp_hash[i] = toupper(tmp_hash[i]);
@@ -506,7 +518,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         {
             hash_line = list_entry(hash_pos, struct hash_node, node);
             if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
-                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+//                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
                 list_del(hash_pos);
                 kfree(hash_line);
             }
@@ -523,7 +535,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         {
             hash_line = list_entry(hash_pos, struct hash_node, node);
             if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
-                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+//                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
                 list_del(hash_pos);
                 kfree(hash_line);
             }
@@ -539,12 +551,16 @@ static void nl_recv_msg(struct sk_buff *skb) {
     int i;
     nlh = (struct nlmsghdr *)skb->data;
 //    printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
-    have_responce = 1;
     snprintf(received_msg, SHA256_SIZE + 1, "%32phN", (char *)nlmsg_data(nlh));
     received_msg[SHA256_SIZE] = '\0';
     for(i = 0; i < SHA256_SIZE; i++){
         received_msg[i] = toupper(received_msg[i]);
     }
+    // Check if empty string hash
+    if(strcmp(received_msg, "00686F6D652F757365722F436C696F6E50726F6A656374732F7363727069742F") == 0)
+        have_responce = -1;
+    else
+        have_responce = 1;
     wake_up_all(&responce_waitqueue);
 }
 

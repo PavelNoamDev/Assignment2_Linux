@@ -467,7 +467,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
     else if(startsWith(write_msg, "ScriptBlock 1")){
         is_script_blocking_enabled = 1;
     }
-    else if(startsWith(write_msg, "AddExeHash")){
+    else if(startsWith(write_msg, "AddExecHash")){
         // Save exe hash
         hash_to_add = (struct hash_node *)kmalloc(sizeof(struct hash_node), GFP_KERNEL);
         if(unlikely(!hash_to_add))
@@ -480,7 +480,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
             printk(KERN_ERR "No SHA256!\n");
             return -1;
         }
-        strncpy(hash_to_add->hash, write_msg + strlen("AddExeHash "), SHA256_SIZE);
+        strncpy(hash_to_add->hash, write_msg + strlen("AddExecHash "), SHA256_SIZE);
         hash_to_add->hash[SHA256_SIZE] = '\0';
         for(i = 0; i < SHA256_SIZE; i++){
             hash_to_add->hash[i] = toupper(hash_to_add->hash[i]);
@@ -507,8 +507,8 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         }
         list_add(&(hash_to_add->node), &(script_hashes.node));
     }
-    else if(startsWith(write_msg, "DelExeHash")){
-        strncpy(tmp_hash, write_msg + strlen("DelExeHash "), SHA256_SIZE);
+    else if(startsWith(write_msg, "DelExecHash")){
+        strncpy(tmp_hash, write_msg + strlen("DelExecHash "), SHA256_SIZE);
         tmp_hash[SHA256_SIZE] = '\0';
         for(i = 0; i < SHA256_SIZE; i++){
             tmp_hash[i] = toupper(tmp_hash[i]);
@@ -518,7 +518,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         {
             hash_line = list_entry(hash_pos, struct hash_node, node);
             if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
-                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+//                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
                 list_del(hash_pos);
                 kfree(hash_line);
             }
@@ -535,7 +535,7 @@ ssize_t kblocker_proc_write(struct file *sp_file, const char __user *buf, size_t
         {
             hash_line = list_entry(hash_pos, struct hash_node, node);
             if(strncmp(hash_line->hash, tmp_hash, SHA256_SIZE) == 0){
-                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
+//                printk(KERN_DEBUG "Freeing node with hash: %s \n", hash_line->hash);
                 list_del(hash_pos);
                 kfree(hash_line);
             }

@@ -71,25 +71,33 @@ int main()
 
 
 		FILE* file = fopen(path, "rb");
-	    if(!file) return -1;
-
-	    sha256_init(&ctx);
-	    const int bufSize = 32768;
-	    char* buffer = malloc(bufSize);
-	    int bytesRead = 0;
-
-	    if(!buffer) 
-	    	return -1;
-
-	    while((bytesRead = fread(buffer, 1, bufSize, file)))
+	    if(!file) 
 	    {
-	        sha256_update(&ctx, buffer, bytesRead);
+	    	printf("Error opening file!\n");
+	    	strcpy(hash, "");
 	    }
-	    sha256_final(&ctx,hash);
+	    else
+	    {
+	    	sha256_init(&ctx);
+		    const int bufSize = 32768;
+		    char* buffer = malloc(bufSize);
+		    int bytesRead = 0;
 
-	    print_hash(hash);
-	    fclose(file);
-	    free(buffer);
+		    if(!buffer) 
+		    	return -1;
+
+		    while((bytesRead = fread(buffer, 1, bufSize, file)))
+		    {
+		        sha256_update(&ctx, buffer, bytesRead);
+		    }
+		    sha256_final(&ctx,hash);
+
+		    print_hash(hash);
+		    fclose(file);
+		    free(buffer);
+	    }
+
+	    
 	    
 
 

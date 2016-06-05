@@ -152,7 +152,6 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
         {
             if (startsWith(argv[1], "/")){
-                printk(KERN_INFO "Yes!\n");
                 msg_size = strlen(argv[1]) + 1;
                 strncpy(msgToSend, argv[1], msg_size);
             }
@@ -185,9 +184,14 @@ int my_sys_execve(const char __user *filename, const char __user *const __user *
         if (res < 0){
 //            printk(KERN_INFO "Error while sending back to KBlockerUM\n");
             is_kblockerum_running = 0;
-            }
-        else
+        }
+        else{
             wait_event(responce_waitqueue, have_responce); // Wait until response is received
+            if(have_responce == -1){
+                printk(KERN_ERR "Could not find the file to calculate hash\n");
+                return -1;
+            }
+        }
     }
 
     if (is_script_mon_enabled && strlen(filename) > 6 && !strcmp(filename + strlen(filename) - 6, "python") && argv[1])
@@ -539,12 +543,16 @@ static void nl_recv_msg(struct sk_buff *skb) {
     int i;
     nlh = (struct nlmsghdr *)skb->data;
 //    printk(KERN_INFO "Netlink received msg payload: %32phN\n", (char *)nlmsg_data(nlh));
-    have_responce = 1;
     snprintf(received_msg, SHA256_SIZE + 1, "%32phN", (char *)nlmsg_data(nlh));
     received_msg[SHA256_SIZE] = '\0';
     for(i = 0; i < SHA256_SIZE; i++){
         received_msg[i] = toupper(received_msg[i]);
     }
+    // Check if empty string hash
+    if(strcmp(received_msg, "00686F6D652F757365722F436C696F6E50726F6A656374732F7363727069742F") == 0)
+        have_responce = -1;
+    else
+        have_responce = 1;
     wake_up_all(&responce_waitqueue);
 }
 
